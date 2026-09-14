@@ -1,0 +1,23 @@
+Target: 192.168.56.101
+Date: [today's date]
+Scripts used: recon_helper.py (v1), recon_helper_v2.py (v2)
+
+1. What v1 found (automated scan, no AI):
+   - 22/tcp open, ssh, OpenSSH 10.2p1
+
+2. What my Week 1 manual report said:
+   - - SSH was open on port 22. Severity was informational. Recommended keeping SSH updated and restricting access.
+
+3. What the AI (v2) added on top:
+   - Turned the raw port list into a 10-item prioritized checklist
+   - Flagged reviewing SSH config, auth logs, patch status, firewall rules
+   - Correctly noted an open port ≠ proven vulnerability
+
+4. Where the AI got it right:
+   - - Item 1 (confirm the host is supposed to run SSH) was a smart first check I hadn't explicitly written down myself.
+
+5. Where the AI overreached or assumed too much:
+   -- It assumed I have login logs and monitoring set up (items 3, 5, 9) — I don't have that in this lab yet, so those aren't actionable right now.
+
+6. My takeaway:
+   - - The AI was much faster than writing a manual report and gave a more structured checklist, but a few items assumed infrastructure I don't have — I had to use my own judgment to filter those out.
