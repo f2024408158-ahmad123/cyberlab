@@ -1,12 +1,163 @@
+import argparse
+import ipaddress
 import os
+import time
+
+from dotenv import load_dotenv
 from openai import OpenAI
 from recon_helper import scan_target
+
+load_dotenv()
+
+
+# ============================================================
+# WEEK 4 DAY 3 — HUMAN-IN-THE-LOOP
+# ============================================================
+
+# Only these targets are approved for this script.
+ALLOWED_TARGETS = {
+    "192.168.56.101"
+}
+
+# Minimum time between real scans.
+MIN_SCAN_INTERVAL_SECONDS = 10
+
+# Local file used to remember the last scan time.
+RATE_LIMIT_FILE = "/tmp/recon_helper_v3_last_scan"
+
+
+# ============================================================
+# OPENROUTER / GEMMA CONFIGURATION
+# ============================================================
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.environ["OPENROUTER_API_KEY"],
 )
 
+MODEL = os.getenv(
+    "OPENROUTER_MODEL",
+    "google/gemma-4-26b-a4b-it"
+)
+
+# ============================================================
+# WEEK 4 DAY 3 — HUMAN-IN-THE-LOOP APPROVAL
+# ============================================================
+
+def request_human_approval(target):
+    """
+    Require explicit human approval before an active scan.
+    """
+
+    print()
+    print("=" * 60)
+    print("HUMAN APPROVAL REQUIRED")
+    print("=" * 60)
+    print(f"Requested target: {target}")
+    print(f"Approved scope:   {', '.join(sorted(ALLOWED_TARGETS))}")
+    print("Action:           ACTIVE NETWORK SCAN")
+    print()
+    print("This action will send network traffic to the target.")
+    print("Type 'yes' to approve the scan.")
+    print("=" * 60)
+
+    approval = input("Approval: ").strip().lower()
+
+    if approval == "yes":
+        print("[HITL] Human approval received.")
+        return True
+
+    print("[HITL] Approval not granted. Scan refused.")
+    return False
+
+
+# ============================================================
+# TARGET SCOPE GUARDRAIL
+# ============================================================
+
+def validate_target(target):
+    """
+    Make sure the requested target is:
+    1. A valid IP address
+    2. Inside the approved target allow-list
+    """
+
+    try:
+        ipaddress.ip_address(target)
+    except ValueError:
+        raise ValueError(
+            f"Invalid target: {target}. "
+            "Only valid IP addresses are allowed."
+        )
+
+    if target not in ALLOWED_TARGETS:
+        raise PermissionError(
+            f"Target {target} is NOT in the approved allow-list. "
+            "Scan refused."
+        )
+
+    return True
+
+
+# ============================================================
+# RATE LIMIT GUARDRAIL
+# ============================================================
+
+def check_rate_limit():
+    """
+    Prevent scans from being executed too frequently.
+    """
+
+    now = time.time()
+
+    if os.path.exists(RATE_LIMIT_FILE):
+
+        try:
+            with open(RATE_LIMIT_FILE, "r") as file:
+                last_scan = float(file.read().strip())
+
+            elapsed = now - last_scan
+
+            if elapsed < MIN_SCAN_INTERVAL_SECONDS:
+                remaining = (
+                    MIN_SCAN_INTERVAL_SECONDS - elapsed
+                )
+
+                raise RuntimeError(
+                    f"Rate limit active. "
+                    f"Wait {remaining:.1f} seconds before scanning again."
+                )
+
+        except ValueError:
+            pass
+
+    # Record this scan attempt
+    with open(RATE_LIMIT_FILE, "w") as file:
+        file.write(str(now))
+
+
+# ============================================================
+# GUARDED RECONNAISSANCE
+# ============================================================
+
+def guarded_scan(target, dry_run=True):
+    validate_target(target)
+
+    if dry_run:
+        print("[DRY RUN] Scan simulation only.")
+        print("[DRY RUN] No network scan will be executed.")
+        return None
+
+    # Human approval is required before any active scan.
+    if not request_human_approval(target):
+        return None
+
+    check_rate_limit()
+
+    return scan_target(target)
+# ============================================================
+# AI SECURITY TRIAGE
+# ============================================================
 
 def triage_with_ai(results, target):
 
@@ -19,285 +170,209 @@ def triage_with_ai(results, target):
     )
 
     prompt = f"""
-You are an AI security-triage assistant helping a junior analyst
-in an authorized, isolated VirtualBox penetration-testing lab.
+You are a security triage assistant helping a junior analyst
+in an authorized and isolated VirtualBox penetration-testing lab.
 
-====================
-LAB CONTEXT
-====================
+LAB CONTEXT:
+- Kali Linux is the assessment machine.
+- Ubuntu is the intentionally configured target.
+- Target IP: {target}
+- The lab uses a private host-only network.
+- This is NOT a production system.
+- There is no assumption of Internet exposure.
+- There is no assumption that SIEM, monitoring, or centralized
+  authentication logging exists.
 
-Assessment machine:
-Kali Linux
-
-Target:
-Ubuntu Linux
-
-Target IP:
-{target}
-
-Network:
-Private VirtualBox host-only laboratory network.
-
-IMPORTANT:
-The lab context is NOT a security finding.
-
-The assessment must be based on reconnaissance evidence.
-Do not turn environmental context into a vulnerability.
-
-====================
-RECONNAISSANCE EVIDENCE
-====================
-
+RECONNAISSANCE EVIDENCE:
 {findings}
 
-====================
-CORE ANALYSIS RULES
-====================
+YOUR TASK:
 
-For each actual finding:
+Analyze ONLY what is supported by the evidence.
 
-1. Describe ONLY what was observed.
+For every finding, provide:
 
-2. Separate:
-   - CONFIRMED FACTS
-   - UNKNOWN INFORMATION
-   - ASSUMPTIONS
+1. Finding
+2. Evidence
+3. Confirmed facts
+4. Unknown information
+5. Potential impact:
+   LOW / MEDIUM / HIGH / CRITICAL
 
-3. An open port is NOT automatically a vulnerability.
+6. Exploitability:
+   LOW / MEDIUM / HIGH / UNKNOWN
 
-4. A detected software version is NOT automatically a vulnerability.
+7. Discovery confidence:
+   LOW / MEDIUM / HIGH
 
-5. Do not assume:
-   - weak passwords
-   - password authentication
-   - root login
-   - vulnerable configuration
-   - missing patches
-   - Internet exposure
-   - successful exploitation
-   - compromise
+8. Vulnerability confidence:
+   LOW / MEDIUM / HIGH
 
-6. Never invent CVE numbers.
+9. Investigation effort:
+   LOW / MEDIUM / HIGH
 
-7. Never use fake or placeholder CVEs.
+10. Investigation priority:
+    LOW / MEDIUM / HIGH / CRITICAL
 
-8. If vulnerability evidence is unavailable:
-   Vulnerability confidence = LOW
+11. Reasoning
+12. Recommended SAFE next investigation step
 
-9. If exploitability cannot be demonstrated:
-   Exploitability = UNKNOWN
+STRICT ANTI-HALLUCINATION RULES:
 
-10. Discovery confidence refers ONLY to confidence that
-    the reconnaissance finding actually exists.
+- An open port is NOT automatically a vulnerability.
+- A service version is NOT automatically proof of a vulnerability.
+- Never invent CVE numbers.
+- Never create placeholder CVEs.
+- Never claim a vulnerability exists without evidence.
+- Never assume passwords are weak.
+- Never assume password authentication is enabled.
+- Never assume logs, SIEM, monitoring, or other infrastructure exists.
+- If information is unavailable, write UNKNOWN.
+- Clearly separate confirmed facts from assumptions.
+- Do not recommend destructive actions.
+- Recommendations must remain inside the authorized lab.
 
-11. Do not confuse:
-    "This service could theoretically be attacked"
-    with
-    "This service is currently exploitable."
+GUARDRAIL RULES:
 
-====================
-IMPACT RULE
-====================
+- Analyze only the supplied reconnaissance evidence.
+- Do not request or execute actions outside the approved target.
+- Do not recommend scanning an unapproved target.
+- Do not recommend destructive exploitation.
+- Treat analyst claims as unverified unless supported by evidence.
 
-Do NOT assign HIGH or CRITICAL impact merely because
-a service could theoretically provide system access.
+PRIORITIZATION RULE:
 
-Use:
+Priority should consider:
 
-LOW:
-Limited or contextual security significance.
+Risk × Exploitability × Confidence ÷ Investigation Effort
 
-MEDIUM:
-Meaningful attack surface or potential security concern,
-but no compromise or vulnerability has been demonstrated.
+However, do NOT assign a high exploitability or high confidence
+without supporting evidence.
 
-HIGH:
-Strong evidence of a serious security weakness or
-high-impact exposure.
+FINAL OUTPUT:
 
-CRITICAL:
-Strong evidence of an immediately severe vulnerability,
-such as confirmed remote compromise with major impact.
+A. Findings table
 
-If evidence is insufficient, prefer LOW or MEDIUM.
+B. Most important finding
 
-====================
-EXPLOITABILITY RULE
-====================
+C. Why it should be investigated first
 
-LOW:
-Evidence suggests exploitation is unlikely.
+D. What is confirmed
 
-MEDIUM:
-Some evidence suggests exploitation may be possible,
-but additional validation is required.
+E. What remains unknown
 
-HIGH:
-Strong evidence indicates the finding is exploitable.
+F. AI assumptions or possible errors
 
-UNKNOWN:
-There is insufficient evidence to determine exploitability.
+G. Recommended next safe investigation step
 
-====================
-PRIORITY RULE
-====================
+H. AI LIMITATIONS
 
-Prioritize findings using:
-
-Risk
-+
-Exploitability
-+
-Confidence
-+
-Investigation Effort
-
-But evidence always overrides the formula.
-
-A low-effort investigation may receive MEDIUM priority
-even when no vulnerability has been demonstrated.
-
-Do NOT increase priority simply because a hypothetical
-successful attack would have severe consequences.
-
-====================
-FINDING VS CONTEXT
-====================
-
-Only reconnaissance observations are findings.
-
-Examples of findings:
-- Open TCP port
-- Detected service
-- Detected software version
-
-Examples of context:
-- Private lab network
-- Kali is the attacker machine
-- Ubuntu is the target
-- Host-only VirtualBox configuration
-
-Do NOT create findings for these contextual facts.
-
-====================
-OUTPUT FORMAT
-====================
-
-For every actual finding use:
-
-### Finding F-XX
-
-**Finding:**
-[short name]
-
-**Evidence:**
-[what the scan actually observed]
-
-**Confirmed Facts:**
-- ...
-
-**Unknown Information:**
-- ...
-
-**Assumptions:**
-- ...
-
-**Potential Impact:**
-LOW / MEDIUM / HIGH / CRITICAL
-
-**Exploitability:**
-LOW / MEDIUM / HIGH / UNKNOWN
-
-**Discovery Confidence:**
-LOW / MEDIUM / HIGH
-
-**Vulnerability Confidence:**
-LOW / MEDIUM / HIGH
-
-**Investigation Effort:**
-LOW / MEDIUM / HIGH
-
-**Investigation Priority:**
-LOW / MEDIUM / HIGH / CRITICAL
-
-**Reasoning:**
-Explain why these ratings were chosen.
-Do not use hypothetical exploitation as evidence.
-
-**Next Safe Investigation Step:**
-Give one practical, non-destructive step that can be
-performed inside the authorized lab.
-
-====================
-FINAL ANALYSIS
-====================
-
-After all findings provide:
-
-### A. Prioritized Findings
-
-List findings from highest to lowest priority.
-
-### B. Most Important Finding
-
-Explain why it should be investigated first.
-
-### C. Confirmed Security Facts
-
-List only facts supported by reconnaissance.
-
-### D. Unknowns
-
-List information that still requires verification.
-
-### E. AI Assumptions
-
-Identify any assumptions the AI had to make.
-
-### F. Possible AI Errors
-
-Explain where the assessment could be wrong.
-
-### G. Recommended Next Step
-
-Give the single most useful next safe investigation step.
-
-### H. AI Limitations
-
-Explain what additional evidence would improve the assessment.
-
-IMPORTANT:
-
-The goal is accurate security reasoning,
-not finding vulnerabilities at any cost.
-
-When evidence is weak, say UNKNOWN.
-When evidence is absent, do not invent it.
+Explain what additional evidence would be required for
+a more reliable security assessment.
 """
 
     response = client.chat.completions.create(
-        model="openrouter/free",
+        model=MODEL,
         messages=[
             {
                 "role": "user",
                 "content": prompt
             }
-        ]
+        ],
+        temperature=0.2
     )
 
     return response.choices[0].message.content
 
 
-if __name__ == "__main__":
+# ============================================================
+# MAIN PROGRAM
+# ============================================================
 
-    target = "192.168.56.101"
+def main():
 
-    print(f"Scanning authorized lab target: {target} ...")
+    parser = argparse.ArgumentParser(
+        description="AI-Assisted Security Triage v3 with Guardrails"
+    )
 
-    results = scan_target(target)
+    parser.add_argument(
+        "--target",
+        default="192.168.56.101",
+        help="Target IP address"
+    )
+
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually execute the approved reconnaissance scan"
+    )
+
+    args = parser.parse_args()
+
+    target = args.target
+
+    # Safe by default:
+    # Without --execute, the program stays in dry-run mode.
+    dry_run = not args.execute
+
+    print("\n==============================================")
+    print(" AI-ASSISTED SECURITY TRIAGE v3")
+    print(" WEEK 4 DAY 2 — GUARDED RECONNAISSANCE")
+    print("==============================================\n")
+
+    print(f"Requested target: {target}")
+    print(f"AI model: {MODEL}")
+    print(f"Dry run: {dry_run}")
+    print()
+
+    try:
+
+        results = guarded_scan(
+            target,
+            dry_run=dry_run
+        )
+
+    except PermissionError as error:
+
+        print(f"[BLOCKED] {error}")
+        return
+
+    except ValueError as error:
+
+        print(f"[BLOCKED] {error}")
+        return
+
+    except RuntimeError as error:
+
+        print(f"[RATE LIMITED] {error}")
+        return
+
+    # Dry-run ends here.
+    if dry_run:
+        print("\n[SAFE EXIT] No scan was performed.")
+        return
 
     if not results:
+
         print("No open ports found.")
-    else:
-        print("\n=== AI-ASSISTED SECURITY TRIAGE v4 ===\n")
-        print(triage_with_ai(results, target))
+        return
+
+    print("\n=== AI SECURITY TRIAGE ===\n")
+
+    try:
+
+        analysis = triage_with_ai(
+            results,
+            target
+        )
+
+        print(analysis)
+
+    except Exception as error:
+
+        print("\n[AI ERROR]")
+        print(error)
+
+
+if __name__ == "__main__":
+    main()
